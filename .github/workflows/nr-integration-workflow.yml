@@ -14,9 +14,11 @@ on:
         type: choice
         options:
           - ASIA
-          - EMEA
-          - AMERICAS
-          - GLOBAL
+          - CORPORATE & OTHER
+          - CANADA
+          - US
+          - GWAM
+          - ETS
       month_year:
         description: 'Month and Year (e.g., Nov 2025, Dec 2024)'
         required: true
