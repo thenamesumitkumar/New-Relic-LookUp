@@ -78,22 +78,23 @@ TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # ============================================================================
 
 class Logger:
-def __init__(self, log_file: Path):
-self.log_file = log_file
-self.messages = []
+    def __init__(self, log_file: Path):
+        self.log_file = log_file
+        self.messages = []
 
-def log(self, message: str, level: str = "INFO"):
-ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-formatted = f"[{ts}] [{level:8s}] {message}"
-print(formatted)
-self.messages.append(formatted)
+    def log(self, message: str, level: str = "INFO"):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        formatted = f"[{ts}] [{level:8s}] {message}"
+        print(formatted)
+        self.messages.append(formatted)
 
-def save(self):
-try:
-with open(self.log_file, 'w', encoding='utf-8') as f:
-f.write("\n".join(self.messages))
-except Exception as e:
-print(f"✗ Failed to save log: {e}")
+    def save(self):
+        try:
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                f.write("\n".join(self.messages))
+        except Exception as e:
+            print(f"✗ Failed to save log: {e}")
+
 
 logger = Logger(LOG_DIR / f"integration_{TIMESTAMP}.log")
 
