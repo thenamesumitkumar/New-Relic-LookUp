@@ -30,15 +30,15 @@ import traceback
 
 # SSL config
 try:
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 except:
-pass
-
+  pass
+  
 try:
-requests.packages.urllib3.disable_warnings()
+    requests.packages.urllib3.disable_warnings()
 except:
-pass
+    pass
 
 # ============================================================================
 # CONFIGURATION
