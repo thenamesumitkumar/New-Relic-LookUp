@@ -67,14 +67,15 @@ jobs:
       # 5️⃣ Verify CSV generation
       - name: Verify CSV outputs
         run: |
-          echo "Verifying CSV files under segment: ${{ inputs.segment }}"
+          echo "Verifying CSV files under segment: $SEGMENT"
 
-          find "${{ inputs.segment }}" -type f -name "*.csv" -print
+          ls -ld "$SEGMENT"
 
-          CSV_COUNT=$(find "${{ inputs.segment }}" -type f -name "*.csv" | wc -l)
+          find "$SEGMENT" -type f -name "*.csv" -print
+
+          CSV_COUNT=$(find "$SEGMENT" -type f -name "*.csv" | wc -l)
           echo "Total CSV files found: $CSV_COUNT"
 
-          # Expect at least 2 CSVs per run
           test "$CSV_COUNT" -ge 2
 
       # 6️⃣ Commit generated CSVs back to repository
