@@ -1,5 +1,8 @@
 name: SK API Integration Pipeline
 
+permissions:
+  contents: write   # ✅ REQUIRED to allow git push
+  
 on:
   workflow_dispatch:
     inputs:
