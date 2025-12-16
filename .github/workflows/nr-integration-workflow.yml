@@ -57,6 +57,12 @@ jobs:
             "${{ inputs.app_code }}" \
             "${{ inputs.segment }}" \
             "${{ inputs.month }}"
+      - name: Verify CSV outputs
+        run: |
+          TARGET_DIR="${{ inputs.segment }}/${OUTPUT_FOLDER_NAME}"
+          echo "Checking output in $TARGET_DIR"
+          ls -lh "$TARGET_DIR"
+          test $(ls "$TARGET_DIR"/*.csv | wc -l) -eq 2
 
       - name: Verify CSV outputs
         run: |
