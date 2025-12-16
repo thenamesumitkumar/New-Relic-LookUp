@@ -37,6 +37,21 @@ except:
 # CONFIGURATION
 # ============================================================================
 
+# Base paths
+SCRIPT_DIR = Path(__file__).resolve().parent
+BASE_DIR = SCRIPT_DIR.parent  # Repository root
+
+# Segment is passed from GitHub Actions (fallback for local runs)
+SEGMENT = os.getenv("SEGMENT", "ASIA")
+
+# CSV output directory will be created dynamically inside main()
+CSV_DIR = None
+
+# Keep logs OUTSIDE the repo (prevents extra files in GitHub)
+LOG_DIR = Path("/tmp/sk_logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# API configuration
 API_BASE = "https://application-resource-mapping.platform-insights.dev.cac.corp.aks.manulife.com/api/v1"
 
 API_ENDPOINTS = {
@@ -45,31 +60,15 @@ API_ENDPOINTS = {
     "apps": f"{API_BASE}/apps/"
 }
 
+# New Relic configuration
 NR_API_URL = "https://api.newrelic.com/graphql"
 NR_API_KEY = os.getenv("NR_API_KEY")
 
+# Request settings
 SSL_VERIFY = False
 TIMEOUT = 60
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-BASE_DIR = SCRIPT_DIR.parent  # repo root
-
-# Values injected by GitHub Actions
-SEGMENT = os.getenv("SEGMENT", "ASIA")
-OUTPUT_FOLDER_NAME = os.getenv(
-    "OUTPUT_FOLDER_NAME",
-    "APM000000 - APP00000 - UNKNOWN"
-)
-
-# Final output location:
-# <repo-root>/<SEGMENT>/<APMxxxx - APPxxxxx - Name>/
-CSV_DIR = BASE_DIR / SEGMENT / OUTPUT_FOLDER_NAME
-CSV_DIR.mkdir(parents=True, exist_ok=True)
-
-# 🔥 Keep logs OUT of repo (runner temp directory)
-LOG_DIR = Path("/tmp/sk_logs")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-
+# Timestamp for output files
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # ============================================================================
@@ -400,6 +399,20 @@ def main():
     # Fetch APIs
     apps = fetch_apps_api(args.app_code)
     mappings = fetch_mappings_api(args.app_code, args.segment, args.month)
+    # 🔹 Derive App Name dynamically (from API)
+app_name = ""
+apm_number = ""
+
+if mappings:
+    app_name = mappings[0].get("app_name", "").strip()
+    apm_number = mappings[0].get("app_ci_number", "").strip()
+
+if not app_name:
+    app_name = args.app_code  # safe fallback
+
+if not apm_number:
+    apm_number = "APM000000"
+
 
     # Build lookup
     lookup = build_resource_service_lookup(apps)
