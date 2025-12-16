@@ -38,9 +38,6 @@ jobs:
       # Segment passed to Python script
       SEGMENT: ${{ inputs.segment }}
 
-      # Folder naming convention (customize APM number if needed)
-      OUTPUT_FOLDER_NAME: "APM123456 - ${{ inputs.app_code }} - Veenam Asia"
-
     steps:
       # 1️⃣ Checkout code
       - name: Checkout repository
