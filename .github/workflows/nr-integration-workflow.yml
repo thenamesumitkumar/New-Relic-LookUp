@@ -1,241 +1,73 @@
-name: API Integration with New Relic Account Lookup
+name: SK API Integration Pipeline
 
-# Trigger: Manual dispatch with input parameters
 on:
   workflow_dispatch:
     inputs:
       app_code:
-        description: 'Application Code (e.g., APP01915)'
+        description: "Application Code (e.g. APP01915)"
         required: true
-        type: string
+        default: "APP01915"
+
       segment:
-        description: 'Segment (e.g., ASIA, EMEA, AMERICAS)'
+        description: "Segment"
         required: true
         type: choice
         options:
           - ASIA
-          - CORPORATE & OTHER
-          - CANADA
           - US
-          - GWAM
+          - CANADA
           - ETS
-      month_year:
-        description: 'Month and Year (e.g., Nov 2025, Dec 2024)'
-        required: true
-        type: string
+        default: ASIA
 
-env:
-  PYTHON_VERSION: '3.11'
-  OUTPUT_DIR: 'output'
-  CSV_DIR: 'output/csv'
-  LOG_DIR: 'output/logs'
+      month:
+        description: "Month"
+        required: true
+        default: "Nov 2025"
 
 jobs:
-  # =========================================================================
-  # JOB 1: API Integration with New Relic Lookup
-  # =========================================================================
-  api-integration:
-    name: API Integration & NR Lookup
+  run-sk-script:
     runs-on: ubuntu-latest
-    
-    # Timeout to prevent stuck workflows
-    timeout-minutes: 30
-    
-    permissions:
-      contents: read
-    
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      NR_API_KEY: ${{ secrets.NR_API_KEY }}
+      SEGMENT: ${{ inputs.segment }}
+
+      # 🔥 Folder naming convention
+      OUTPUT_FOLDER_NAME: "APM123456 - ${{ inputs.app_code }} - Veenam Asia"
+
     steps:
-      # ---------------------------------------------------------------
-      # Step 1: Checkout repository code
-      # ---------------------------------------------------------------
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      
-      # ---------------------------------------------------------------
-      # Step 2: Set up Python environment
-      # ---------------------------------------------------------------
-      - name: Set Up Python 3.11
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-  
-      
-      # ---------------------------------------------------------------
-      # Step 3: Install Python dependencies
-      # ---------------------------------------------------------------
-      - name: Install Python Dependencies
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install requests pandas
-        env:
-          PIP_DISABLE_PIP_VERSION_CHECK: 1
-      
-      # ---------------------------------------------------------------
-      # Step 4: Create output directories
-      # ---------------------------------------------------------------
-      - name: Create Output Directories
-        run: |
-          mkdir -p ${{ env.CSV_DIR }}
-          mkdir -p ${{ env.LOG_DIR }}
-          echo "Output directory structure created"
-          ls -la output/
-      
-      # ---------------------------------------------------------------
-      # Step 5: Display workflow inputs (for debugging)
-      # ---------------------------------------------------------------
-      - name: Display Workflow Inputs
-        run: |
-          echo "=========================================="
-          echo "Workflow Parameters:"
-          echo "=========================================="
-          echo "App Code:    ${{ github.event.inputs.app_code }}"
-          echo "Segment:     ${{ github.event.inputs.segment }}"
-          echo "Month/Year:  ${{ github.event.inputs.month_year }}"
-          echo "Timestamp:   $(date '+%Y-%m-%d %H:%M:%S')"
-          echo "=========================================="
-      
-      # ---------------------------------------------------------------
-      # Step 6: Run unified integration script
-      # ---------------------------------------------------------------
-      - name: Run Unified Integration Script
-        id: integration
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run SK integration script
         run: |
           python automation/api_complete_integration_nrlookup.py \
-            "${{ github.event.inputs.app_code }}" \
-            "${{ github.event.inputs.segment }}" \
-            "${{ github.event.inputs.month_year }}"
-        
-        # Pass NR_API_KEY as environment variable (secure)
-        env:
-          NR_API_KEY: ${{ secrets.NR_API_KEY }}
-        
-        # Continue on error to capture logs even if script fails
-        continue-on-error: false
-      
-      # ---------------------------------------------------------------
-      # Step 7: Verify output files were created
-      # ---------------------------------------------------------------
-      - name: Verify Output Files
-        run: |
-          echo "Checking for generated CSV files..."
-          echo "=========================================="
-          
-          CSV_COUNT=$(find ${{ env.CSV_DIR }} -name "*.csv" 2>/dev/null | wc -l)
-          echo "✓ CSV files found: $CSV_COUNT"
-          
-          if [ $CSV_COUNT -lt 2 ]; then
-            echo "✗ Expected 2 CSV files, found $CSV_COUNT"
-            exit 1
-          fi
-          
-          echo "=========================================="
-          echo "Generated files:"
-          ls -lh ${{ env.CSV_DIR }}/
-          echo "=========================================="
-          
-          # Display file statistics
-          for file in ${{ env.CSV_DIR }}/*.csv; do
-            if [ -f "$file" ]; then
-              ROWS=$(tail -n +2 "$file" | wc -l)
-              COLS=$(head -1 "$file" | tr ',' '\n' | wc -l)
-              echo "✓ $(basename $file): $ROWS rows, $COLS columns"
-            fi
-          done
-      
-      # ---------------------------------------------------------------
-      # Step 8: Display log file
-      # ---------------------------------------------------------------
-      - name: Display Integration Log
-        if: always()
-        run: |
-          echo "=========================================="
-          echo "Integration Log:"
-          echo "=========================================="
-          
-          if [ -d "${{ env.LOG_DIR }}" ]; then
-            LATEST_LOG=$(ls -t ${{ env.LOG_DIR }}/integration_*.log 2>/dev/null | head -1)
-            if [ -f "$LATEST_LOG" ]; then
-              echo "Log file: $LATEST_LOG"
-              echo "---"
-              cat "$LATEST_LOG"
-              echo "---"
-            else
-              echo "No log file found"
-            fi
-          fi
-          
-          echo "=========================================="
-      
-      # ---------------------------------------------------------------
-      # Step 9: Upload CSV files as artifacts
-      # ---------------------------------------------------------------
-      - name: Upload CSV Artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-csv-output
-          path: ${{ env.CSV_DIR }}/*.csv
-          retention-days: 30
-          if-no-files-found: error
-      
-      # ---------------------------------------------------------------
-      # Step 10: Upload logs as artifacts
-      # ---------------------------------------------------------------
-      - name: Upload Integration Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-logs
-          path: ${{ env.LOG_DIR }}/*.log
-          retention-days: 30
-          if-no-files-found: warn
-      
-      # ---------------------------------------------------------------
-      # Step 11: Summary output
-      # ---------------------------------------------------------------
-      - name: Print Summary
-        if: success()
-        run: |
-          echo "✅ WORKFLOW COMPLETED SUCCESSFULLY"
-          echo ""
-          echo "Generated CSV Files:"
-          echo "  • app_services_*.csv (7 columns)"
-          echo "  • app_resources_*_final.csv (16 columns with New Relic Account)"
-          echo ""
-          echo "Files are available as workflow artifacts for download."
-  
-  # =========================================================================
-  # JOB 2: Notification/Post-Processing (Optional)
-  # =========================================================================
-  post-processing:
-    name: Post-Processing
-    runs-on: ubuntu-latest
-    needs: api-integration
-    if: always()  # Run regardless of success/failure
-    
-    steps:
-      - name: Check Job Status
-        run: |
-          if [ "${{ needs.api-integration.result }}" = "success" ]; then
-            echo "✅ API Integration job completed successfully"
-            exit 0
-          else
-            echo "❌ API Integration job failed"
-            exit 1
-          fi
-      
-      - name: Download Artifacts (Optional)
-        if: needs.api-integration.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: integration-csv-output
-          path: ./csv-output
-      
-      - name: Display Download Summary
-        if: needs.api-integration.result == 'success'
-        run: |
-          echo "Artifacts downloaded to: ./csv-output/"
-          ls -lh ./csv-output/
+            "${{ inputs.app_code }}" \
+            "${{ inputs.segment }}" \
+            "${{ inputs.month }}"
 
+      - name: Verify CSV outputs
+        run: |
+          TARGET_DIR="${{ inputs.segment }}/${OUTPUT_FOLDER_NAME}"
+          echo "Checking output in $TARGET_DIR"
+          ls -lh "$TARGET_DIR"
+          test $(ls "$TARGET_DIR"/*.csv | wc -l) -eq 2
+
+      - name: Upload CSV artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.app_code }}-${{ inputs.segment }}-csv"
+          path: |
+            ${{ inputs.segment }}/${{ env.OUTPUT_FOLDER_NAME }}/*.csv
