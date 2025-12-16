@@ -399,20 +399,30 @@ def main():
     # Fetch APIs
     apps = fetch_apps_api(args.app_code)
     mappings = fetch_mappings_api(args.app_code, args.segment, args.month)
-    # 🔹 Derive App Name dynamically (from API)
-app_name = ""
-apm_number = ""
+        # ------------------------------------------------------------
+    # Derive App Name & APM number dynamically from API (SAFE)
+    # ------------------------------------------------------------
+    app_name = ""
+    apm_number = ""
 
-if mappings:
-    app_name = mappings[0].get("app_name", "").strip()
-    apm_number = mappings[0].get("app_ci_number", "").strip()
+    if mappings and isinstance(mappings, list):
+        first = mappings[0]
+        app_name = (first.get("app_name") or "").strip()
+        apm_number = (first.get("app_ci_number") or "").strip()
 
-if not app_name:
-    app_name = args.app_code  # safe fallback
+    # Fallbacks (never fail)
+    if not app_name:
+        app_name = args.app_code
 
-if not apm_number:
-    apm_number = "APM000000"
+    if not apm_number:
+        apm_number = "APM000000"
 
+    # Build output folder name dynamically
+    folder_name = f"{apm_number} - {args.app_code} - {app_name}"
+
+    global CSV_DIR
+    CSV_DIR = BASE_DIR / SEGMENT / folder_name
+    CSV_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build lookup
     lookup = build_resource_service_lookup(apps)
