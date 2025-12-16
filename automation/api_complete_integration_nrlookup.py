@@ -1,58 +1,48 @@
 #!/usr/bin/env python3
 """
 UNIFIED INTEGRATION SCRIPT - API Data Fetch + New Relic Account Lookup
+api_complete_integration_nrlookup.py
 
-Usage:
-  python api_complete_integration_nrlookup.py APP01915 ASIA "Nov 2025"
-
-Directory layout created:
-
-  output/
-    <SEGMENT>/
-      <APP_CODE>-<APP_NAME>/
-        app_services.csv      (7 columns)
-        app_resources.csv     (16 columns, incl. New Relic Account)
-        integration_YYYYMMDD_HHMMSS.log
+ADDED:
+- New column: Infrastructure
+- Logic:
+    If New Relic Account in (MLF-PREPROD, MLF-PROD) → Infrastructure = Yes
+    Else → Infrastructure = No
 """
 
 import sys
 import os
+import json
 import datetime
 import argparse
-import traceback
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-
 import requests
 import pandas as pd
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+import traceback
 
-# -----------------------------------------------------------------------------
-# SSL CONFIG
-# -----------------------------------------------------------------------------
+# SSL config
 try:
     import urllib3
-
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
+except:
     pass
 
 try:
-    requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-except Exception:
+    requests.packages.urllib3.disable_warnings()
+except:
     pass
 
-# -----------------------------------------------------------------------------
+# ============================================================================
 # CONFIGURATION
-# -----------------------------------------------------------------------------
+# ============================================================================
 
-API_BASE = (
-    "https://application-resource-mapping.platform-insights.dev.cac.corp.aks.manulife.com/api/v1"
-)
+API_BASE = "https://application-resource-mapping.platform-insights.dev.cac.corp.aks.manulife.com/api/v1"
 
 API_ENDPOINTS = {
     "applications": f"{API_BASE}/application-resources/applications",
     "mappings": f"{API_BASE}/application-resources/mappings",
-    "apps": f"{API_BASE}/apps/",
+    "apps": f"{API_BASE}/apps/"
 }
 
 NR_API_URL = "https://api.newrelic.com/graphql"
@@ -62,87 +52,77 @@ SSL_VERIFY = False
 TIMEOUT = 60
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BASE_DIR = SCRIPT_DIR.parent
-OUTPUT_ROOT = BASE_DIR / "output"
+BASE_DIR = SCRIPT_DIR.parent  # repo root
+
+# Values injected by GitHub Actions
+SEGMENT = os.getenv("SEGMENT", "ASIA")
+OUTPUT_FOLDER_NAME = os.getenv(
+    "OUTPUT_FOLDER_NAME",
+    "APM000000 - APP00000 - UNKNOWN"
+)
+
+# Final output location:
+# <repo-root>/<SEGMENT>/<APMxxxx - APPxxxxx - Name>/
+CSV_DIR = BASE_DIR / SEGMENT / OUTPUT_FOLDER_NAME
+LOG_DIR = CSV_DIR / "logs"
+
+CSV_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-
-# -----------------------------------------------------------------------------
+# ============================================================================
 # LOGGER
-# -----------------------------------------------------------------------------
+# ============================================================================
 
 class Logger:
     def __init__(self, log_file: Path):
         self.log_file = log_file
-        self.messages: List[str] = []
+        self.messages = []
 
-    def log(self, message: str, level: str = "INFO") -> None:
+    def log(self, message: str, level: str = "INFO"):
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         formatted = f"[{ts}] [{level:8s}] {message}"
         print(formatted)
         self.messages.append(formatted)
 
-    def save(self) -> None:
+    def save(self):
         try:
-            self.log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.log_file, "w", encoding="utf-8") as f:
+            with open(self.log_file, 'w', encoding='utf-8') as f:
                 f.write("\n".join(self.messages))
         except Exception as e:
             print(f"✗ Failed to save log: {e}")
 
+logger = Logger(LOG_DIR / f"integration_{TIMESTAMP}.log")
 
-# Temporary logger, will be reassigned in main() once app/segment are known
-logger = Logger(OUTPUT_ROOT / "logs" / f"integration_{TIMESTAMP}.log")
-
-
-# -----------------------------------------------------------------------------
+# ============================================================================
 # UTILITY FUNCTIONS
-# -----------------------------------------------------------------------------
+# ============================================================================
 
 def extract_meter_category(full_path: str) -> str:
-    """
-    Extract meter category from full resource path.
-
-    Input: /SUBSCRIPTIONS/.../PROVIDERS/MICROSOFT.COMPUTE/DISKS/OSDISK-...
-    Output: MICROSOFT.COMPUTE/DISKS
-    """
     if not full_path or not isinstance(full_path, str):
-        return ""
-
+        return ''
     try:
         path_upper = full_path.upper()
-        providers_idx = path_upper.find("/PROVIDERS/")
-
+        providers_idx = path_upper.find('/PROVIDERS/')
         if providers_idx == -1:
-            return ""
-
-        start_idx = providers_idx + len("/PROVIDERS/")
+            return ''
+        start_idx = providers_idx + len('/PROVIDERS/')
         remaining = full_path[start_idx:]
-        parts = remaining.split("/")
-
+        parts = remaining.split('/')
         if len(parts) >= 2:
             return f"{parts[0]}/{parts[1]}"
-        if len(parts) == 1:
+        elif len(parts) == 1:
             return parts[0]
-        return ""
+        return ''
     except Exception as e:
-        logger.log(f"Error parsing meter category: {str(e)[:50]}", "ERROR")
-        return ""
-
+        logger.log(f"Meter category parse error: {str(e)}", "ERROR")
+        return ''
 
 def normalize_resource_id(resource_id: str) -> str:
-    """Normalize resource ID for comparison (lowercase, trim whitespace)."""
-    if not resource_id:
-        return ""
-    return resource_id.lower().strip()
-
+    return resource_id.lower().strip() if resource_id else ''
 
 def find_first_key(obj: Any, target_key: str) -> Optional[Any]:
-    """
-    Recursively search for the first occurrence of target_key
-    inside a nested dict/list structure.
-    """
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k == target_key:
@@ -156,270 +136,182 @@ def find_first_key(obj: Any, target_key: str) -> Optional[Any]:
             if result is not None:
                 return result
     return None
+# ============================================================================
+# RESOURCE ↔ SERVICE LOOKUP
+# ============================================================================
 
-
-def build_resource_service_lookup(apps_ List[Dict]) -> Dict[str, Dict[str, str]]:
-    """
-    Build lookup table:
-
-      normalized resource_id -> {
-         app_service_name,
-         app_service_ci_number,
-         Resource Type- Class,
-         Process State
-      }
-    """
+def build_resource_service_lookup(apps_data: List[Dict]) -> Dict[str, Dict[str, str]]:
     lookup: Dict[str, Dict[str, str]] = {}
 
-    for app in apps_
-        app_process_state = find_first_key(app, "process_state") or ""
-        services = app.get("app_services") or []
+    for app in apps_data:
+        app_process_state = find_first_key(app, 'process_state') or ''
+        services = app.get('app_services') or []
 
         for service in services:
-            app_service_name = service.get("app_service_name", "")
-            app_service_ci_number = service.get("app_service_ci_number", "")
-            app_service_type = service.get("app_service_sys_class_name", "")
+            app_service_name = service.get('app_service_name', '')
+            app_service_ci_number = service.get('app_service_ci_number', '')
+            app_service_type = service.get('app_service_sys_class_name', '')
 
-            service_process_state = find_first_key(service, "process_state")
-            process_state = service_process_state or app_process_state or ""
+            service_process_state = find_first_key(service, 'process_state')
+            process_state = service_process_state or app_process_state or ''
 
-            resources = service.get("resources") or []
+            resources = service.get('resources') or []
             if isinstance(resources, dict):
                 resources = list(resources.values())
 
             for resource in resources:
-                resource_id = (
-                    resource.get("resource_id")
-                    or resource.get("path_end_resource_id")
-                    or ""
-                )
+                resource_id = resource.get('resource_id') or resource.get('path_end_resource_id') or ''
                 if resource_id:
-                    normalized_id = normalize_resource_id(resource_id)
-                    lookup[normalized_id] = {
-                        "app_service_name": app_service_name,
-                        "app_service_ci_number": app_service_ci_number,
-                        "Resource Type- Class": app_service_type,
-                        "Process State": process_state,
+                    lookup[normalize_resource_id(resource_id)] = {
+                        'app_service_name': app_service_name,
+                        'app_service_ci_number': app_service_ci_number,
+                        'Resource Type- Class': app_service_type,
+                        'Process State': process_state
                     }
 
-    logger.log(f"Built resource lookup: {len(lookup)} resource IDs indexed", "LOOKUP")
+    logger.log(f"Built resource lookup with {len(lookup)} entries", "LOOKUP")
     return lookup
 
-
-# -----------------------------------------------------------------------------
+# ============================================================================
 # API FETCHING
-# -----------------------------------------------------------------------------
+# ============================================================================
 
 def fetch_applications_api() -> List[Dict]:
-    logger.log("Fetching API #1: Applications", "FETCH")
+    logger.log("Fetching Applications API", "FETCH")
     try:
-        response = requests.get(
+        r = requests.get(
             API_ENDPOINTS["applications"],
             params={"format": "json"},
             timeout=TIMEOUT,
-            verify=SSL_VERIFY,
+            verify=SSL_VERIFY
         )
-        if response.status_code != 200:
-            logger.log(f"Status {response.status_code}", "ERROR")
-            return []
-
-        data = response.json()
-        if isinstance(data, dict):
-            data = [data]
-        if not isinstance(data, list):
-            data = []
-
-        logger.log(f"✓ Got {len(data)} applications", "FETCH")
-        return data
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else [data]
     except Exception as e:
-        logger.log(f"Error: {str(e)[:100]}", "ERROR")
+        logger.log(f"Applications API error: {e}", "ERROR")
         return []
 
-
 def fetch_mappings_api(app_code: str, segment: str, month: str) -> List[Dict]:
-    logger.log(f"Fetching API #2: Mappings (app={app_code}, seg={segment})", "FETCH")
+    logger.log("Fetching Mappings API", "FETCH")
     try:
-        response = requests.get(
+        r = requests.get(
             API_ENDPOINTS["mappings"],
             params={
                 "app_code": app_code,
                 "segment": segment,
                 "month": month,
-                "format": "json",
+                "format": "json"
             },
             timeout=TIMEOUT,
-            verify=SSL_VERIFY,
+            verify=SSL_VERIFY
         )
-        if response.status_code != 200:
-            logger.log(f"Status {response.status_code}", "ERROR")
-            return []
-
-        data = response.json()
-        if isinstance(data, dict):
-            data = [data]
-        if not isinstance(data, list):
-            data = []
-
-        logger.log(f"✓ Got {len(data)} mappings", "FETCH")
-        return data
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else [data]
     except Exception as e:
-        logger.log(f"Error: {str(e)[:100]}", "ERROR")
+        logger.log(f"Mappings API error: {e}", "ERROR")
         return []
 
-
 def fetch_apps_api(app_code: str) -> List[Dict]:
-    logger.log(f"Fetching API #3: Apps (app={app_code})", "FETCH")
+    logger.log("Fetching Apps API", "FETCH")
     try:
-        response = requests.get(
+        r = requests.get(
             API_ENDPOINTS["apps"],
             params={
                 "mfc_app_code": app_code,
                 "format": "json",
-                "include_resource": "true",
+                "include_resource": "true"
             },
             timeout=TIMEOUT,
-            verify=SSL_VERIFY,
+            verify=SSL_VERIFY
         )
-        if response.status_code != 200:
-            logger.log(f"Status {response.status_code}", "ERROR")
-            return []
-
-        data = response.json()
-        if isinstance(data, dict):
-            data = [data]
-        if not isinstance(data, list):
-            data = []
-
-        logger.log(f"✓ Got {len(data)} app(s)", "FETCH")
-        return data
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else [data]
     except Exception as e:
-        logger.log(f"Error: {str(e)[:100]}", "ERROR")
+        logger.log(f"Apps API error: {e}", "ERROR")
         return []
 
-
-# -----------------------------------------------------------------------------
+# ============================================================================
 # DATA EXTRACTION
-# -----------------------------------------------------------------------------
+# ============================================================================
 
 def extract_resources_from_mappings(
-    mappings_ List[Dict],
-    resource_lookup: Dict[str, Dict[str, str]],
+    mappings_data: List[Dict],
+    resource_lookup: Dict[str, Dict[str, str]]
 ) -> List[Dict]:
-    logger.log(f"Extracting {len(mappings_data)} resources from Mappings API", "EXTRACT")
 
     resources: List[Dict[str, Any]] = []
-    matched_count = 0
-    unmatched_count = 0
 
-    for mapping in mappings_
-        ci_number = mapping.get("path_end_ci_number") or ""
-        resource_id = mapping.get("path_end_resource_id") or ""
-        full_path = resource_id
-        meter_category = extract_meter_category(full_path)
+    for m in mappings_data:
+        resource_id = m.get('path_end_resource_id') or ''
+        norm_id = normalize_resource_id(resource_id)
 
-        app_service_name = ""
-        app_service_ci_number = ""
-        app_service_resource_type = ""
-        app_service_process_state = ""
+        svc = resource_lookup.get(norm_id, {})
 
-        if resource_id:
-            normalized_id = normalize_resource_id(resource_id)
-            svc_info = resource_lookup.get(normalized_id)
-            if svc_info:
-                app_service_name = svc_info.get("app_service_name", "")
-                app_service_ci_number = svc_info.get("app_service_ci_number", "")
-                app_service_resource_type = svc_info.get("Resource Type- Class", "")
-                app_service_process_state = svc_info.get("Process State", "")
-                matched_count += 1
-            else:
-                unmatched_count += 1
-        else:
-            unmatched_count += 1
+        resources.append({
+            'Resource Name': m.get('path_end_name', ''),
+            'Resource Type': m.get('path_end_sys_class', ''),
+            'CI Number': m.get('path_end_ci_number', ''),
+            'Business Application': m.get('app_ci_number', ''),
+            'Meter Category': extract_meter_category(resource_id),
+            'App Code': m.get('app_code', ''),
+            'App Name': m.get('app_name', ''),
+            'App Cost Center': m.get('app_cost_center', ''),
+            'Segment': m.get('segment', ''),
+            'Sub Segment': m.get('sub_segment', ''),
+            'Resource ID': resource_id,
+            'app_service_name': svc.get('app_service_name', ''),
+            'app_service_ci_number': svc.get('app_service_ci_number', ''),
+            'Resource Type- Class': svc.get('Resource Type- Class', ''),
+            'Process State': svc.get('Process State', '')
+        })
 
-        resource = {
-            "Resource Name": mapping.get("path_end_name") or "",
-            "Resource Type": mapping.get("path_end_sys_class") or "",
-            "CI Number": ci_number,
-            "Business Application": mapping.get("app_ci_number") or "",
-            "Meter Category": meter_category,
-            "App Code": mapping.get("app_code") or "",
-            "App Name": mapping.get("app_name") or "",
-            "App Cost Center": mapping.get("app_cost_center") or "",
-            "Segment": mapping.get("segment") or "",
-            "Sub Segment": mapping.get("sub_segment") or "",
-            "Resource ID": mapping.get("path_end_resource_id") or "",
-            "app_service_name": app_service_name,
-            "app_service_ci_number": app_service_ci_number,
-            "Resource Type- Class": app_service_resource_type,
-            "Process State": app_service_process_state,
-        }
-        resources.append(resource)
-
-    logger.log(f"✓ Extracted {len(resources)} resources", "EXTRACT")
-    logger.log(
-        f"  Matched with service: {matched_count}, Unmatched: {unmatched_count}",
-        "EXTRACT",
-    )
-
+    logger.log(f"Extracted {len(resources)} resources", "EXTRACT")
     return resources
 
+def extract_services_from_apps(apps_data: List[Dict]) -> List[Dict]:
+    services: List[Dict[str, Any]] = []
 
-def extract_services_from_apps(apps_ List[Dict]) -> List[Dict]:
-    logger.log(f"Extracting services from {len(apps_data)} app(s)", "EXTRACT")
+    for app in apps_data:
+        app_code = app.get('mfc_app_code', '')
+        parent_ci = app.get('apm_app_id', '')
+        app_state = find_first_key(app, 'process_state') or ''
 
-    all_services: List[Dict[str, Any]] = []
+        for svc in app.get('app_services', []):
+            svc_state = find_first_key(svc, 'process_state') or app_state
 
-    for app in apps_
-        app_code = app.get("mfc_app_code") or ""
-        app_ci_number = app.get("apm_app_id") or ""
-        app_process_state = find_first_key(app, "process_state") or ""
-        services = app.get("app_services") or []
+            services.append({
+                'Resource Name': svc.get('app_service_name', ''),
+                'Resource Type': svc.get('app_service_sys_class_name', ''),
+                'CI Number': svc.get('app_service_ci_number', ''),
+                'Application Code': app_code,
+                'Environment': svc.get('mfc_env', ''),
+                'Parent CI Number': parent_ci,
+                'Process State': svc_state
+            })
 
-        logger.log(f"  App {app_code}: Processing {len(services)} services", "EXTRACT")
-
-        for service in services:
-            service_process_state = find_first_key(service, "process_state")
-            process_state = service_process_state or app_process_state or ""
-
-            svc = {
-                "Resource Name": service.get("app_service_name") or "",
-                "Resource Type": service.get("app_service_sys_class_name") or "",
-                "CI Number": service.get("app_service_ci_number") or "",
-                "Application Code": app_code,
-                "Environment": service.get("mfc_env") or "",
-                "Parent CI Number": app_ci_number or "",
-                "Process State": process_state,
-            }
-            all_services.append(svc)
-
-    logger.log(f"✓ Extracted {len(all_services)} services", "EXTRACT")
-    return all_services
-
-
-# -----------------------------------------------------------------------------
-# NEW RELIC ACCOUNT LOOKUP
-# -----------------------------------------------------------------------------
+    logger.log(f"Extracted {len(services)} services", "EXTRACT")
+    return services
+# ============================================================================
+# NEW RELIC ACCOUNT LOOKUP + INFRASTRUCTURE LOGIC
+# ============================================================================
 
 class NewRelicLookup:
-    """Handles New Relic API queries for account information."""
-
-    def __init__(self) -> None:
-        self.account_cache: Dict[str, str] = {}
+    def __init__(self):
+        self.cache: Dict[str, str] = {}
         self.nr_api_key = NR_API_KEY
 
         if not self.nr_api_key:
-            logger.log("WARNING: NR_API_KEY not set. New Relic lookups will fail.", "WARNING")
+            logger.log("NR_API_KEY not set. NR lookups disabled.", "WARNING")
 
-    def get_item_details(self, item_name: str) -> str:
-        """
-        Given a resource name, query New Relic entitySearch and return account name.
-        Returns: account_name or "NA" (not found) or "ERROR" (API failure)
-        """
-        if not item_name:
+    def get_account_name(self, resource_name: str) -> str:
+        if not resource_name:
             return "NA"
 
-        if item_name in self.account_cache:
-            return self.account_cache[item_name]
+        if resource_name in self.cache:
+            return self.cache[resource_name]
 
         if not self.nr_api_key:
             return "ERROR"
@@ -427,7 +319,7 @@ class NewRelicLookup:
         query = f"""
         {{
           actor {{
-            entitySearch(queryBuilder: {{name: "{item_name}", domain: INFRA}}) {{
+            entitySearch(queryBuilder: {{ name: "{resource_name}", domain: INFRA }}) {{
               results {{
                 entities {{
                   account {{
@@ -440,10 +332,114 @@ class NewRelicLookup:
         }}
         """
 
-        payload = {"query": query, "variables": ""}
-        headers = {"Content-Type": "application/json", "API-Key": self.nr_api_key}
-
         try:
-            response = requests.post(
+            r = requests.post(
                 NR_API_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "API-Key": self.nr_api_key
+                },
+                json={"query": query},
+                timeout=30,
+                verify=SSL_VERIFY
+            )
+            r.raise_for_status()
+            entities = r.json()["data"]["actor"]["entitySearch"]["results"]["entities"]
+            account = entities[0]["account"]["name"] if entities else "NA"
 
+        except Exception as e:
+            logger.log(f"NR lookup failed for {resource_name}: {e}", "NR_WARN")
+            account = "ERROR"
+
+        self.cache[resource_name] = account
+        return account
+
+    def enrich_resources(self, resources: List[Dict]) -> List[Dict]:
+        logger.log("Starting New Relic enrichment", "NR")
+
+        for i, r in enumerate(resources, start=1):
+            nr_account = self.get_account_name(r.get('Resource Name', ''))
+            r['New Relic Account'] = nr_account
+
+            # 🔥 Infrastructure column logic
+            if nr_account in ("MLF-PREPROD", "MLF-PROD"):
+                r['Infrastructure'] = "Yes"
+            else:
+                r['Infrastructure'] = "No"
+
+            if i % 50 == 0:
+                logger.log(f"NR processed {i}/{len(resources)}", "NR")
+
+        logger.log("New Relic enrichment complete", "NR")
+        return resources
+# ============================================================================
+# CSV GENERATION
+# ============================================================================
+
+def generate_csv(data: List[Dict], columns: List[str], filename: Path) -> int:
+    logger.log(f"Writing {filename.name}", "CSV")
+    df = pd.DataFrame(data, columns=columns)
+    df.to_csv(filename, index=False, encoding="utf-8")
+    logger.log(f"Saved {len(df)} rows", "CSV")
+    return len(df)
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("app_code")
+    parser.add_argument("segment")
+    parser.add_argument("month")
+    args = parser.parse_args()
+
+    logger.log(f"Run started for {args.app_code}", "START")
+
+    # Fetch APIs
+    apps = fetch_apps_api(args.app_code)
+    mappings = fetch_mappings_api(args.app_code, args.segment, args.month)
+
+    # Build lookup
+    lookup = build_resource_service_lookup(apps)
+
+    # Extract data
+    resources = extract_resources_from_mappings(mappings, lookup)
+    services = extract_services_from_apps(apps)
+
+    # NR + Infrastructure enrichment
+    nr = NewRelicLookup()
+    resources = nr.enrich_resources(resources)
+
+    # CSVs
+    services_cols = [
+        'Resource Name', 'Resource Type', 'CI Number',
+        'Application Code', 'Environment',
+        'Parent CI Number', 'Process State'
+    ]
+
+    resources_cols = [
+        'Resource Name', 'Resource Type', 'CI Number',
+        'Business Application', 'Meter Category',
+        'App Code', 'App Name', 'App Cost Center',
+        'Segment', 'Sub Segment', 'Resource ID',
+        'app_service_name', 'app_service_ci_number',
+        'Resource Type- Class', 'Process State',
+        'New Relic Account', 'Infrastructure'
+    ]
+
+    services_file = CSV_DIR / f"app_services_{TIMESTAMP}.csv"
+    resources_file = CSV_DIR / f"app_resources_{TIMESTAMP}_final.csv"
+
+    generate_csv(services, services_cols, services_file)
+    generate_csv(resources, resources_cols, resources_file)
+
+    logger.log("Run completed successfully", "COMPLETE")
+    logger.save()
+
+    print("\n✅ CSVs generated:")
+    print(f" - {services_file.name}")
+    print(f" - {resources_file.name}")
+
+if __name__ == "__main__":
+    sys.exit(main())
