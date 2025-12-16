@@ -70,6 +70,17 @@ jobs:
           echo "Checking output in $TARGET_DIR"
           ls -lh "$TARGET_DIR"
           test $(ls "$TARGET_DIR"/*.csv | wc -l) -eq 2
+                - name: Commit generated CSVs to repository
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add ASIA/
+          git status
+
+          git commit -m "Add CSV outputs for ${{ inputs.app_code }} (${{ inputs.segment }})" || echo "No changes to commit"
+          git push
+
 
       - name: Upload CSV artifacts
         uses: actions/upload-artifact@v4
