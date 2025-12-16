@@ -20,7 +20,7 @@ on:
         default: ASIA
 
       month:
-        description: "Month"
+        description: "Month (e.g. Nov 2025)"
         required: true
         default: "Nov 2025"
 
@@ -31,57 +31,62 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       NR_API_KEY: ${{ secrets.NR_API_KEY }}
+
+      # Segment passed to Python script
       SEGMENT: ${{ inputs.segment }}
 
-      # 🔥 Folder naming convention
+      # Folder naming convention (customize APM number if needed)
       OUTPUT_FOLDER_NAME: "APM123456 - ${{ inputs.app_code }} - Veenam Asia"
 
     steps:
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 4️⃣ Run SK script
       - name: Run SK integration script
         run: |
           python automation/api_complete_integration_nrlookup.py \
             "${{ inputs.app_code }}" \
             "${{ inputs.segment }}" \
             "${{ inputs.month }}"
-      - name: Verify CSV outputs
-        run: |
-          TARGET_DIR="${{ inputs.segment }}/${OUTPUT_FOLDER_NAME}"
-          echo "Checking output in $TARGET_DIR"
-          ls -lh "$TARGET_DIR"
-          test $(ls "$TARGET_DIR"/*.csv | wc -l) -eq 2
 
+      # 5️⃣ Verify CSV generation
       - name: Verify CSV outputs
         run: |
           TARGET_DIR="${{ inputs.segment }}/${OUTPUT_FOLDER_NAME}"
-          echo "Checking output in $TARGET_DIR"
+          echo "Verifying output directory: $TARGET_DIR"
           ls -lh "$TARGET_DIR"
-          test $(ls "$TARGET_DIR"/*.csv | wc -l) -eq 2
-                - name: Commit generated CSVs to repository
+          CSV_COUNT=$(ls "$TARGET_DIR"/*.csv | wc -l)
+          echo "CSV count: $CSV_COUNT"
+          test "$CSV_COUNT" -eq 2
+
+      # 6️⃣ Commit generated CSVs back to repository
+      - name: Commit generated CSVs to repository
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add ASIA/
+          git add "${{ inputs.segment }}/"
           git status
 
           git commit -m "Add CSV outputs for ${{ inputs.app_code }} (${{ inputs.segment }})" || echo "No changes to commit"
           git push
 
-
+      # 7️⃣ Upload CSVs as downloadable artifacts
       - name: Upload CSV artifacts
         uses: actions/upload-artifact@v4
         with:
