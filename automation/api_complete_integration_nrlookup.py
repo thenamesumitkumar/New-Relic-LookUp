@@ -64,9 +64,10 @@ OUTPUT_FOLDER_NAME = os.getenv(
 # Final output location:
 # <repo-root>/<SEGMENT>/<APMxxxx - APPxxxxx - Name>/
 CSV_DIR = BASE_DIR / SEGMENT / OUTPUT_FOLDER_NAME
-LOG_DIR = CSV_DIR / "logs"
-
 CSV_DIR.mkdir(parents=True, exist_ok=True)
+
+# 🔥 Keep logs OUT of repo (runner temp directory)
+LOG_DIR = Path("/tmp/sk_logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
